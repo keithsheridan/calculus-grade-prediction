@@ -18,7 +18,7 @@ To predict student performance in Calculus using:
 - Developed a Bayesian linear model with priors for teacher and course effects
 - Visualized parameter estimates and predicted letter grade probabilities
 
-## 📈 Key Results
+## Key Results
 
 - **Best predictors**: Precalculus grade, GPA, PSAT score (in that order)
 - **Bayesian β estimates** (credible intervals):
@@ -28,7 +28,7 @@ To predict student performance in Calculus using:
 - **Teacher effects**: Teacher 3 showed significantly lower outcomes
 - **Course level**: Students in AP section performed slightly worse on average
 
-## 🔍 Example Predictions
+## Example Predictions
 
 | Student | Predicted Grade | 95% CI       | P(A)   | P(B)   | P(C)   | P(F)   |
 |---------|------------------|--------------|--------|--------|--------|--------|
