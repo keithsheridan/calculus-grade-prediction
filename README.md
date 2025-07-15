@@ -47,6 +47,6 @@ To predict student performance in Calculus using:
 
 - `code/` – R Markdown script for analysis
 - `report/` – Final PDF project write-up
-*Dataset is private*
+- *Dataset is private*
 
 ---
