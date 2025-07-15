@@ -1,0 +1,632 @@
+---
+title: "Bayesian Statistics - Final Project"
+author: "Keith Sheridan"
+date: "Due: 8/2/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(knitr)
+library(readxl)
+library(writexl)
+library(olsrr)
+library(lmtest)
+library(xtable)
+library(egg)
+library(coda)
+```
+
+```{r, echo=FALSE}
+######################################################################
+#This chunk of code wrangles the data into a usable file for analysis.
+######################################################################
+
+#Reading in the data from an Excel file.
+dataHTPC <- read_excel("Bayesian Project Data.xlsx", sheet = 2)
+dataHC <- read_excel("Bayesian Project Data.xlsx", sheet = 3)
+dataAPC <- read_excel("Bayesian Project Data.xlsx", sheet = 4)
+
+dataHTPC %>% 
+  filter(grade_course_taken_htpc != 12) %>% #Filtering out senior students.
+  select(student_num, last_first, grade_course_taken_htpc, grade_htpc, gpa_of_grade_level, teacher_name_htpc) -> clean.dataHTPC #Selecting desired variables and storing the data set
+dataHC %>% 
+  select(student_num, grade_course_taken_hc, grade_hc, teacher_name_hc) -> clean.dataHC
+dataAPC %>% 
+  select(student_num, grade_apc, teacher_name_apc) -> clean.dataAPC
+
+clean.dataHTPC %>% 
+  full_join(clean.dataHC, by="student_num") %>% #Mergring the HTPC and HC data.
+  full_join(clean.dataAPC, by="student_num") %>% #Merging the HTPC/HC and APC data.
+  filter(!is.na(last_first) & 
+           (!is.na(grade_hc) |
+           !is.na(grade_apc))) %>%  #Filter to students who have grades for HTPC and either HC or APC.
+  select(last_first, gpa_of_grade_level, grade_htpc, teacher_name_htpc, grade_hc, 
+         teacher_name_hc, grade_apc, teacher_name_apc) -> clean.dataHTPCtoAPC
+#The final data set will only contain those who took HTPC and HC/APC (some students took both).
+
+
+#Writing the dataframe to an excel file
+write_xlsx(clean.dataHTPCtoAPC, "data.xlsx")
+```
+
+```{r, echo=FALSE}
+#######################################################################
+#This chunk of code is responsible for the data cleaning in preparation
+#for analysis.
+#######################################################################
+data <- read_excel("data_final.xlsx")
+data %>% 
+  filter(teacher_name_hc %in% c("Sheridan, Keith", NA)) %>% #Filtered out student who did not finish HC due to mental health placement.
+  filter(!is.na(psat)) %>% #Filtering out those with missing PSAT scores.
+  mutate(ap_yn = as.factor(case_when(is.na(grade_apc) ~ 1, #Creating a factor variable which indicates AP or Honors -- 2=APC and 1=HC
+                          !is.na(grade_apc) ~ 2)),
+         teach_num = as.factor(case_when(teacher_name_htpc == "Lottes, James" ~ 1, #Creating a factor variable for each teacher
+                                         teacher_name_htpc == "Moore, Janet" ~ 2,
+                                         teacher_name_htpc == "Robinson, Richard" ~ 3,
+                                         teacher_name_htpc == "Sheridan, Keith" ~ 4,
+                                         teacher_name_htpc == "Thompson, Donna" ~ 5)),
+         grade_calc = case_when(ap_yn == 2 ~ grade_apc, #Creating a "calculus grade" variable for my response.
+                                ap_yn == 1 ~ grade_hc)) %>% 
+  rename(gpa = gpa_of_grade_level) -> cln_data #Renaming the gpa variable and storing in object cln_data
+```
+
+# Introduction
+
+Calculus is often regarded as a challenging subject, demanding rigorous analytical thinking and an aptitude for problem-solving. While classes are typically inhabited by those seeking a career in mathematics and/or science, Calculus offers a broad range of advantages to all who enroll, including but not limited to: engaging with practical applications, enhancing problem-solving skills, boosting college acceptance probability, widening the scope of career opportunities, and stimulating intellectual growth. As a result, the decision to enroll in a Calculus class while in high school should be well-informed for all interested students.
+
+The main objective of this analysis is to be able to predict future Calculus grades from a set of five explanatory variables, namely, Math PSAT score, GPA, Precalculus grade, Precalculus teacher, and level of Calculus. In addition, two minor objectives will be explored: (1) Does the Precalculus teacher affect the student's performance in Calculus, as measured by their final course grade? and (2) which numerical predictor is most important for determining a student's Calculus grade? Overall, this analysis aims to examine the nuances of calculus grades, exploring factors that may impact student performance, identifying patterns, and generalizing potential outcomes.
+
+# Statistical Summaries
+
+For this analysis, the response variable will be the score obtained in a Calculus course and the predictors of interest will be: Math PSAT score, GPA, Precalculus grade, Precalculus teacher, and level of Calculus (Honors or Advanced Placement). The following will provide statistical summaries and graphics of all relevant variables. 
+
+*Note: 34 observations were dropped due to missing Precalculus grades and/or Math PSAT scores. The values are missing for the students who transferred to our school for their senior year, enrolled in Precalculus at a separate institution, or completed Precalculus at a level lower than Honors. As this analysis is intended for those enrolled in the Honors level of Precalculus, those enrolled in lower levels would not be considered. Lastly, while those who are missing either a Precalculus grade or Math PSAT score (18 observations total) should be investigated, those concerns will not be addressed in this paper.*
+
+```{r, echo=FALSE}
+#Response variable plot.
+rv <- ggplot(cln_data) +
+  geom_histogram(aes(grade_calc), binwidth = 5) +
+  labs(x = "Calculus Grade", y = "Frequency", title = "Calculus Grade", subtitle = "AP and Honors Level Students") +
+  theme_bw()
+#Predictor PSAT plot
+pv1 <- ggplot(cln_data) +
+  geom_histogram(aes(psat), binwidth = 20) +
+  labs(x = "PSAT Score", y = "Frequency", title = "Math PSAT Scores", subtitle = "AP and Honors Level Students") +
+  theme_bw()
+#Predictor GPA plot
+pv2 <- ggplot(cln_data) +
+  geom_histogram(aes(gpa), binwidth = 0.2) +
+  labs(x = "GPA", y = "Frequency", title = "GPA", subtitle = "AP and Honors Level Students") +
+  theme_bw()
+#Predictor PC grade
+pv3 <- ggplot(cln_data) +
+  geom_histogram(aes(grade_htpc), binwidth = 5) +
+  labs(x = "Precalculus Grade", y = "Frequency", title = "Precalculus Grade", subtitle = "AP and Honors Level Students") +
+  theme_bw()
+
+ggarrange(rv,pv1,pv2,pv3, nrow = 2, ncol = 2, labels = c(1,2,3,4))
+```
+
+(1) Plot 1 above displays a histogram of the Calculus grades (the response variable). The data is centered at approximately 90 and skewed slightly left with no visible outliers.
+
+(2) Plot 2 above displays a histogram of the Math PSAT scores. The data is centered at approximately 600 and skewed slightly right with no visible outliers. The reason for the unique shape in the upper half of the data comes from the scaled scores of the PSAT, which vary from test to test. The raw score of the math section of the PSAT ranges from 0 - 48, with the scaled scores ranging from 160 - 760. Each 1 unit decrease in raw score can correspond to a 0, 10, or 20 point decrease in scaled score.
+
+(3) Plot 3 above displays a histogram of GPA. The data is centered at approximately 5 and skewed slightly left with no visible outliers.
+
+(4) Plot 4 above displays a histogram of Precalculus grades. The data is centered at approximately 91 and skewed slightly left with no visible outliers.
+
+While graphics for the categorical variables will not be shown. Please see frequency Table 1 above for a breakdown of the counts.
+
+```{r, echo=FALSE}
+cln_data %>%
+  select(teach_num) %>% 
+  group_by(teach_num) %>% 
+  summarize(Count = n()) %>% 
+  rename(Teacher = teach_num) -> pv4
+
+cln_data %>%
+  select(ap_yn) %>% 
+  group_by(ap_yn) %>% 
+  summarize(Count = n()) %>% 
+  rename(Level = ap_yn) -> pv5
+
+kable(list(pv4,pv5), booktabs = TRUE, valign = 't', caption = "Frequency counts for teacher and Calculus level (1=Honors, 2=AP), respectively.")
+```
+
+# Initial Analysis - Multiple Linear Regression
+
+I began my analysis by fitting a multiple linear regression model with all predictors:
+
+$y = \beta_0 + \sum_{i=1}^9 \beta_ix_i + \epsilon$ where $\epsilon \overset{iid}{\sim} N(0,\sigma^2)$, with
+
+* $y=$ Calculus Grade
+* $x_1=$ Math PSAT z-score, $x_2=$ GPA z-score, $x_3=$ Precalculus grade z-score,
+* $x_4=$ 1 (if Teacher 1, 0 otherwise), $x_5=$ 1 (if Teacher 2, 0 otherwise), $x_6=$ 1 (if Teacher 3, 0 otherwise)
+* $x_7=$ 1 (if Teacher 4, 0 otherwise) , $x_8=$ 1 (if Teacher 5, 0 otherwise), $x_9=$ 1 (if AP-level, 0 otherwise).
+
+The purpose of the least squares model was to obtain starting values for the parameters in the Markov chain of the Bayesian analysis. Output from the model is shown in the table below.
+
+```{r, echo=FALSE, include=FALSE}
+#######################################################################
+#This chunk of code is responsible for Frequentist analysis.
+#######################################################################
+freq_model <- lm(scale(grade_calc) ~ scale(psat) + scale(gpa) + scale(grade_htpc) + ap_yn + teach_num, data = cln_data)
+summary(freq_model)
+#Running the Frequentist model for starting values for my parameters.
+#beta0
+#beta1(psat):0.27232
+#beta2(gpa):0.31692
+#beta3(grade_htpc):0.46018
+```
+
+```{r, echo=FALSE}
+kable(coef(summary(freq_model)), caption = "Output from the Least Squares Regression Model")
+```
+
+## Model Assumptions
+
+```{r, echo=FALSE}
+#######################################################################
+#This chunk of code is responsible for model assumption checking.
+#######################################################################
+#par(mfrow=c(2,2))
+#plot(freq_model, which = 1)
+#plot(freq_model, which = 2)
+#plot(freq_model$residuals, xlab = "Order", ylab = "Residual Value")
+#Plots were paired(instead of being individual) to save space.
+```
+
+### Linearity and Equal Variance
+
+The residuals versus fitted plot (not shown) appears problematic for the equal variance assumption of multiple linear regression. From the plot, it appears possible the variance of the residuals for the upper end of the fitted values spectrum is different from the rest of the data. However, the residual values seem to be centered at zero, suggesting a linear relationship.
+
+#### Breusch-Pagan Test
+
+I decided to perform the Breusch-Pagan Test to determine if heteroscedasticity is present. The hypotheses of the test are
+
+$H_0:$ Heteroscedasticity is not present vs. $H_a:$ Heteroscedasticity is present.
+
+```{r, echo=FALSE, include=FALSE}
+bptest(freq_model)
+```
+
+Since $p = 0.030 < 0.05$, we reject $H_0$ at the 0.05 level. There is evidence to show heteroscedasticity is present.
+
+### Normality
+
+The Normal Q-Q plot (not shown) shows some concerning behavior in the tails of the distribution. It is possible the error terms are not normally distributed.
+
+#### Shapiro-Wilk Test
+
+I decided to perform the Shapiro-Wilk Test to determine if the residual values are normally distributed. The hypotheses of the test are
+
+$H_0:$ Residuals are normal vs. $H_a:$ Residuals are non-normal.
+
+```{r, echo=FALSE, include=FALSE}
+shapiro.test(freq_model$residuals)
+```
+
+Since $p = 0.017 < 0.05$, we reject $H_0$ at the 0.05 level. There is evidence the residual values are not normally distributed.
+
+### Independence
+
+A plot of the residuals vs. order (not shown) was constructed. The variance of the residual values seems lower for approximately the first 50 students. I believe it is worth noting the first 50 students graduated in the year 2020. As a result, they had a Precalculus experience which was unaffected by the COVID-19 pandemic. Moreover, the nation-wide shutdown (which spanned from March 2020 until the end of the school year) may have contributed to the lesser variance.
+
+# Bayesian Analysis
+
+Prior: $\beta_i \sim N(0,1)$ for $i \in \{0,1,2,3\}$, $\beta_j \sim N(0,\sigma_t^2)$ for $j \in \{4,5,6,7,8\}$, $\beta_9 \sim N(-1,1), \sigma \sim Exp(1),$ and $\sigma_t \sim Exp(1)$, where all parameters are mutually independent.
+
+Likelihood: $y \sim N \left( \beta_0 + \sum_{i=1}^9 \beta_ix_i, \sigma^2 \right)$.
+
+```{r, echo=FALSE, include=FALSE}
+#########################################################
+#This chunk of code is responsible for Bayesian analysis.
+#########################################################
+postdens=function(zgrade,b0,b1,b2,b3,bteach,bap,z1,z2,z3,tvec,apvec,sigma,sigmat){
+  if(sigma<0){return(-Inf)}
+  if(sigmat<0){return(-Inf)}
+  prior = dnorm(b0)*dnorm(b1)*dnorm(b2)*dnorm(b3)*prod(dnorm(bteach,0,sigmat)*dexp(sigma)*dexp(sigmat))
+  
+  likelihood = prod(dnorm(zgrade,b0+b1*z1+b2*z2+b3*z3+bteach[tvec]+bap*apvec,sigma))
+  
+  prior*likelihood
+}
+
+logpostdens=function(zgrade,b0,b1,b2,b3,bteach,bap,z1,z2,z3,tvec,apvec,sigma,sigmat){
+  if(sigma<0){return(-Inf)}
+  if(sigmat<0){return(-Inf)}
+  logprior=log(dnorm(b0))+log(dnorm(b1))+log(dnorm(b2))+log(dnorm(b3))+sum(log(dnorm(bteach,0,sigmat)))+log(dnorm(bap,-1,1))+log(dexp(sigma))+log(dexp(sigmat))
+  
+  loglikelihood=sum(log(dnorm(zgrade,b0+b1*z1+b2*z2+b3*z3+bteach[tvec]+bap*apvec,sigma)))
+  
+  logprior+loglikelihood
+}
+
+#Starting values (which were taken from the Frequentist model)
+zgrade=scale(cln_data$grade_calc)
+b0=0.332853 #freq_model$coefficients[1]
+b1=0.2723235 #freq_model$coefficients[2]
+b2=0.3169231 #freq_model$coefficients[3]
+b3=0.4601823 #freq_model$coefficients[4]
+z1=scale(cln_data$psat)
+z2=scale(cln_data$gpa)
+z3=scale(cln_data$grade_htpc)
+bteach=c(0,-0.3688017,-1.0755548,-0.1639619,0.0959775) #c(0,freq_model$coefficients[6:9])
+bap=-0.4460061 #c(0,freq_model$coefficients[5])
+tvec=cln_data$teach_num
+apvec=as.numeric(cln_data$ap_yn==2)
+sigma=1
+sigmat=1
+
+#Half-widths and storage for the Markov chain.
+set.seed(44)
+hwb0=0.2 #Half-width.
+hwb1=0.1
+hwb2=0.1
+hwb3=0.1
+hwbteach=0.2
+hwbap=0.1
+hwsigma=0.1
+hwsigmat=0.4
+nsteps=1000000 #Number of steps to complete.
+storeb0=double(nsteps) #Storage for b0 values
+storeb1=double(nsteps) #Storage for b1 values
+storeb2=double(nsteps) #Storage for b2 values
+storeb3=double(nsteps) #Storage for b3 values
+storebteach=matrix(0,nsteps,5) #Storage for bteach values
+storebap=double(nsteps) #Storage for bap values
+storesigma=double(nsteps) #Storage for sigma values
+storesigmat=double(nsteps) #Storage for sigmat values
+totacc=0
+
+#Running the Markov chain.
+for (step in 1:nsteps) {
+  newb0=runif(1,b0-hwb0,b0+hwb0)
+  newb1=runif(1,b1-hwb1,b1+hwb1)
+  newb2=runif(1,b2-hwb2,b2+hwb2)
+  newb3=runif(1,b3-hwb3,b3+hwb3)
+  newbteach=runif(5,bteach-hwbteach,bteach+hwbteach)
+  newbap=runif(1,bap-hwbap,bap+hwbap)
+  newsigma=runif(1,sigma-hwsigma,sigma+hwsigma)
+  newsigmat=runif(1,sigmat-hwsigmat,sigmat+hwsigmat)
+  acc=min(1,exp(logpostdens(zgrade,newb0,newb1,newb2,newb3,newbteach,newbap,z1,z2,z3,tvec,apvec,newsigma,newsigmat)-
+            logpostdens(zgrade,b0,b1,b2,b3,bteach,bap,z1,z2,z3,tvec,apvec,sigma,sigmat)))
+  if (rbinom(1,1,acc)==1){
+    b0=newb0
+    b1=newb1
+    b2=newb2
+    b3=newb3
+    bteach=newbteach
+    bap=newbap
+    sigma=newsigma
+    sigmat=newsigmat
+    totacc=totacc+1
+  }
+  storeb0[step]=b0 
+  storeb1[step]=b1
+  storeb2[step]=b2
+  storeb3[step]=b3 
+  storebteach[step,]=bteach 
+  storebap[step]=bap
+  storesigma[step]=sigma
+  storesigmat[step]=sigmat
+}
+totacc/nsteps #Acceptance rate of the Markov chain
+```
+
+## Results
+
+### Time Series Plots and Effective Sample Sizes
+
+The time series plots below are the results of the Markov chain for the parameters $\beta_3$ and $\beta_7$. In the interest of layout and brevity, effective sample sizes will be reported instead of all time series plots.
+
+```{r, echo=FALSE}
+#Plots for each parameter
+par(mfrow=c(1,2))
+plot(storeb3,type="l", main = "Beta 3 (PC Grade)")
+plot(storebteach[,4],type="l", main = "Beta 7 (Teacher 4)")
+```
+
+```{r, echo=FALSE}
+essb0 <- effectiveSize(storeb0)
+essb1 <- effectiveSize(storeb1)
+essb2 <- effectiveSize(storeb2)
+essb3 <- effectiveSize(storeb3)
+essb4 <- effectiveSize(storebteach[,1])
+essb5 <- effectiveSize(storebteach[,2])
+essb6 <- effectiveSize(storebteach[,3])
+essb7 <- effectiveSize(storebteach[,4])
+essb8 <- effectiveSize(storebteach[,5])
+essb9 <- effectiveSize(storebap)
+esssig <- effectiveSize(storesigma)
+esssigt <- effectiveSize(storesigmat)
+
+ess1 <- data.frame(b0=essb0,
+                  b1=essb1,
+                  b2=essb2,
+                  b3=essb3,
+                  b4=essb4,
+                  b5=essb5,row.names=c("Effective Sample Size"))
+
+ess2 <- data.frame(b6=essb6,
+                  b7=essb7,
+                  b8=essb8,
+                  b9=essb9,
+                  sig=esssig,
+                  sigt=esssigt,row.names=c("Effective Sample Size"))
+kable(ess1, digits = c(0,0,0,0,0,0), col.names = c("Beta 0", "Beta 1", "Beta 2", "Beta 3", "Beta 4",
+       "Beta 5"))
+kable(ess2, digits = c(0,0,0,0,0,0), col.names = c("Beta 6", "Beta 7", "Beta 8", "Beta 9", "Sigma", "Sigma_t"))
+```
+
+
+```{r, echo=FALSE}
+#########################################################################################
+#This chunk of code is responsible for parameter estimates as well as credible intervals.
+#########################################################################################
+
+vars=c("Beta 0 (Intercept)", "Beta 1 (PSAT)", "Beta 2 (GPA)", "Beta 3 (PC Grade)", "Beta 4 (Teacher 1)",
+       "Beta 5 (Teacher 2)", "Beta 6 (Teacher 3)", "Beta 7 (Teacher 4)", "Beta 8 (Teacher 5)", "Beta 9 (Level)", "Sigma", "Sigma (Teacher)")
+estb0=mean(storeb0)
+estb1=mean(storeb1)
+estb2=mean(storeb2)
+estb3=mean(storeb3)
+estbap=mean(storebap)
+estbteach=colMeans(storebteach)
+estsig=mean(storesigma)
+estsigt=mean(storesigmat)
+estimates <- c(estb0,estb1,estb2,estb3,estbteach,estbap,estsig,estsigt)
+
+cib0=quantile(storeb0,c(0.025,0.975))
+cib1=quantile(storeb1,c(0.025,0.975))
+cib2=quantile(storeb2,c(0.025,0.975))
+cib3=quantile(storeb3,c(0.025,0.975))
+cib4=quantile(storebap,c(0.025,0.975))
+cib51=quantile(storebteach[,1],c(0.025,0.975))
+cib52=quantile(storebteach[,2],c(0.025,0.975))
+cib53=quantile(storebteach[,3],c(0.025,0.975))
+cib54=quantile(storebteach[,4],c(0.025,0.975))
+cib55=quantile(storebteach[,5],c(0.025,0.975))
+cisig=quantile(storesigma,c(0.025,0.975))
+cisigt=quantile(storesigmat,c(0.025,0.975))
+cred_intsl <- c(cib0,cib1,cib2,cib3,cib51,cib52,cib53,cib54,cib55,cib4,cisig,cisigt)[seq(1,24,by=2)]
+cred_intsu <- c(cib0,cib1,cib2,cib3,cib51,cib52,cib53,cib54,cib55,cib4,cisig,cisigt)[seq(2,24,by=2)]
+estNcis <- data.frame(vars,estimates,cred_intsl,cred_intsu) 
+```
+
+### Point Estimates and Credible Intervals
+
+The table below gives a point estimate for each parameter as well as a 95% equal-tailed credible interval. We can see that none of the credible intervals for $\beta_1,\beta_2,$ and $\beta_3$ contain zero, providing evidence that each of these associated predictors is beneficial in the model. Moreover, we see the interval for $\beta_6$ (Teacher 3) does not contain zero rather only negative values, providing evidence that students are expected to have lower Calculus grades if taught Precalculus by Teacher 3.
+
+```{r, echo=FALSE}
+kable(estNcis, digits = 4, col.names = c("Parameter", "Point Estimate", "95% CI (LL)", "95% CI (UL)"), caption = "Estimates and Credible Intervals") 
+```
+
+```{r, echo=FALSE}
+######################################################################################
+#This chunk of code is responsible for predicting grade estimates, credible intervals,
+#and probabilities of obtaining specific letter grades.
+######################################################################################
+
+#Creating a function for prediction
+pred = function(psat,gpa,grade,teacher,apyn){
+  zpsat=(psat-mean(cln_data$psat))/sd(cln_data$psat) #Converts entered PSAT score to a z-score.
+  zgpa=(gpa-mean(cln_data$gpa))/sd(cln_data$gpa) #Converts entered GPA to a z-score.
+  zgrade=(grade-mean(cln_data$grade_htpc))/sd(cln_data$grade_htpc) #Converts entered HTPC grade to a z-score.
+  
+  #Create a vector of z-scores for each of the steps in the Markov chain.
+  yvec=rnorm(nsteps, storeb0+zpsat*storeb1+zgpa*storeb2+zgrade*storeb3+storebteach[,teacher]+storebap*apyn, storesigma)
+  
+  mu = mean(cln_data$grade_calc) #Calculate the mean Calculus grade.
+  sd = sd(cln_data$grade_calc) #Calculate the standard deviation of Calculus grade.
+  values = yvec*sd+mu #Convert the vector of z-scores to Calculus grades.
+  est=mean(values) #Averages the vector of Calculus score to obtain an estimate.
+  
+  #Creating probabilities of obtaining an A,B,C, or not passing.
+  ga=mean(values>=90)
+  gb=mean(values>=80 & values<90)
+  gc=mean(values>=70 & values<80)
+  gf=mean(values<70)
+  
+  return(c(est,quantile(values,c(0.025,0.975)),ga,gb,gc,gf))
+}
+
+```
+
+```{r, echo=FALSE, include=FALSE}
+studpred1=pred(680,5.3,98,4,1)
+studpred2=pred(600,5.0,90,4,1)
+studpred3=pred(560,4.7,88,4,1)
+stud_pred <- data.frame(rbind(studpred1,studpred2,studpred3))
+
+stud_pred_table <- data.frame(student = c("1", "2", "3"),
+                        grade = stud_pred[,1],
+                        cil = stud_pred[,2],
+                        ciu = stud_pred[,3],
+                        a = stud_pred[,4],
+                        b = stud_pred[,5],
+                        c = stud_pred[,6],
+                        f = stud_pred[,7])
+```
+
+### Hypothetical Student Predictions
+
+The table below displays the predictions of outcomes from three hypothetical students. Specifically, their data is as follows:
+
+(1) Student 1: Math PSAT Score = 680, GPA = 5.3, Precalculus Grade = 98, Teacher = 4, Level of Calculus = 1 (AP)
+(2) Student 2: Math PSAT Score = 600, GPA = 5.0, Precalculus Grade = 90, Teacher = 4, Level of Calculus = 1 (AP)
+(3) Student 3: Math PSAT Score = 560, GPA = 4.7, Precalculus Grade = 88, Teacher = 4, Level of Calculus = 1 (AP)
+
+The data above was chosen to simulate an above-average, average, and below-average student, respectively. As there is typically more concern about enrolling in the AP level of Calculus, I wanted to check the model performance on students of varying skill level with the same teacher. The prediction function calculates a predicted calculus grade, constructs a 95% equal-tailed credible interval, and determines the probability of achieving each possible letter grade.
+
+```{r, echo=FALSE}
+kable(stud_pred_table, digits = c(0,0,0,0,3,3,3,3), col.names = c("Student", "Calculus Grade", "95% CI (LL)",
+      "95% CI (UL)", "Probability A", "Probability B", "Probability C", "Probability F"), caption = "Hypothetical Predictions for Calculus Grade")
+```
+
+### Teacher "Effectiveness"
+
+```{r, echo=FALSE, include=FALSE}
+######################################################################################
+#This chunk of code is responsible for ranking the teachers based on the teacher
+#beta parameter.
+######################################################################################
+#Finding  best teacher with all 5 teachers
+best_teach = apply(storebteach,1,which.max)
+best_prob=double(5)
+for (i in 1:5) {
+  best_prob[i]=sum(best_teach==i)
+}
+best_prob=best_prob/nsteps
+
+#Finding best teacher when eliminating teacher 5
+best_teach2 = apply(storebteach[,1:4],1,which.max)
+best_prob2=double(4)
+for (i in 1:4) {
+  best_prob2[i]=sum(best_teach2==i)
+}
+best_prob2=best_prob2/nsteps
+```
+
+The table below displays the rank of each teacher by overall proportion of highest beta value. For the teacher betas, higher values are associated with higher Calculus grades. For each run of the simulation (1,000,000 runs), the teacher with the largest beta value was recorded. Afterwards, we find the sum for each teacher and divide by the total number of runs to arrive at the proportions given in the table.
+
+```{r, echo=FALSE}
+data.frame(teacher=c(1,5,4,2,3),
+           prop = sort(best_prob, decreasing = T)) %>% 
+  kable(digits = 3, col.names = c("Teacher","Highest Beta Proportion"), caption = "Rank of Teacher by Beta Proportion")
+```
+
+
+
+```{r, echo=FALSE, include=FALSE}
+######################################################################################
+#This chunk of code is responsible for creating a grid of pairwise comparisons for
+#all teachers. The value in the data frame is probability of row teacher being better
+#than column teacher.
+######################################################################################
+#Teacher 1 vs. Teacher 2
+bt12 = apply(storebteach[,c(1,2)],1,which.max)
+bt12store=double(2)
+for (i in 1:2) {
+  bt12store[i]=sum(bt12==i)
+}
+bt12prob=bt12store/nsteps
+
+#Teacher 1 vs. Teacher 3
+bt13 = apply(storebteach[,c(1,3)],1,which.max)
+bt13store=double(2)
+for (i in 1:2) {
+  bt13store[i]=sum(bt13==i)
+}
+bt13prob=bt13store/nsteps
+
+#Teacher 1 vs. Teacher 4
+bt14 = apply(storebteach[,c(1,4)],1,which.max)
+bt14store=double(2)
+for (i in 1:2) {
+  bt14store[i]=sum(bt14==i)
+}
+bt14prob=bt14store/nsteps
+
+#Teacher 1 vs. Teacher 5
+bt15 = apply(storebteach[,c(1,5)],1,which.max)
+bt15store=double(2)
+for (i in 1:2) {
+  bt15store[i]=sum(bt15==i)
+}
+bt15prob=bt15store/nsteps
+
+#Teacher 2 vs. Teacher 3
+bt23 = apply(storebteach[,c(2,3)],1,which.max)
+bt23store=double(2)
+for (i in 1:2) {
+  bt23store[i]=sum(bt23==i)
+}
+bt23prob=bt23store/nsteps
+
+#Teacher 2 vs. Teacher 4
+bt24 = apply(storebteach[,c(2,4)],1,which.max)
+bt24store=double(2)
+for (i in 1:2) {
+  bt24store[i]=sum(bt24==i)
+}
+bt24prob=bt24store/nsteps
+
+#Teacher 2 vs. Teacher 5
+bt25 = apply(storebteach[,c(2,5)],1,which.max)
+bt25store=double(2)
+for (i in 1:2) {
+  bt25store[i]=sum(bt25==i)
+}
+bt25prob=bt25store/nsteps
+
+#Teacher 3 vs. Teacher 4
+bt34 = apply(storebteach[,c(3,4)],1,which.max)
+bt34store=double(2)
+for (i in 1:2) {
+  bt34store[i]=sum(bt34==i)
+}
+bt34prob=bt34store/nsteps
+
+#Teacher 3 vs. Teacher 5
+bt35 = apply(storebteach[,c(3,5)],1,which.max)
+bt35store=double(2)
+for (i in 1:2) {
+  bt35store[i]=sum(bt35==i)
+}
+bt35prob=bt35store/nsteps
+
+#Teacher 4 vs. Teacher 5
+bt45 = apply(storebteach[,c(4,5)],1,which.max)
+bt45store=double(2)
+for (i in 1:2) {
+  bt45store[i]=sum(bt45==i)
+}
+bt45prob=bt45store/nsteps
+
+teachmat <- as.data.frame(round(matrix(c(NA, bt12prob[1], bt13prob[1], bt14prob[1], bt15prob[1],
+                   bt12prob[2], NA, bt23prob[1], bt24prob[1], bt25prob[1],
+                   bt13prob[2], bt23prob[2], NA, bt34prob[1], bt35prob[1],
+                   bt14prob[2], bt24prob[2], bt34prob[2], NA, bt45prob[1],
+                   bt15prob[2], bt25prob[2], bt35prob[2], bt45prob[2], NA),5,5,byrow = T,),3))
+rownames(teachmat) <- c("Teacher 1"," Teacher 2","Teacher 3","Teacher 4"," Teacher 5")
+colnames(teachmat) <- c("Teacher 1"," Teacher 2","Teacher 3","Teacher 4"," Teacher 5")
+```
+
+In addition to ranking the teachers, I created a table (below) of pairwise comparisons. By doing so, each teacher is able to be compared with all other teachers. The value in each cell of the table is the probability of the row teacher producing better Calculus grades than the column teacher. For example, the value in row 1, column 2 is 0.970. This means that in 97% of the runs of the simulation the beta value for Teacher 1 was larger than that of Teacher 2. Conversely, in row 2, column 1, the value 0.030 indicates that in 3% of the runs of the simulation the beta value for Teacher 2 was larger than that of Teacher 1.
+
+```{r, echo=FALSE}
+kable(teachmat, caption = "Pairwise Comparison of 'Teacher Effectiveness'")
+```
+
+### Predictor Importance
+
+```{r, echo=FALSE, include=FALSE}
+######################################################################################
+#This chunk of code is responsible for ranking the predictors based on the beta
+#parameters.
+######################################################################################
+betas = cbind(storeb1,storeb2,storeb3)
+best_beta = apply(betas,1,which.max)
+
+best_beta_prob=double(3)
+for (i in 1:3) {
+  best_beta_prob[i]=sum(best_beta==i)
+}
+best_beta_prob=best_beta_prob/nsteps
+```
+
+The table below displays the rank of each numerical predictor by overall proportion of highest beta value. For each run of the simulation (1,000,000 runs), the largest numeric beta value was recorded. Afterwards, we find the sum for each beta and divide by the total number of runs to arrive at the proportions given in the table. Since the beta values are indicating the expected increase in Calculus grade z-score per unit increase in the respective predictor, given all other variables in the model, larger beta values are associated with larger Calculus grades.
+
+```{r, echo=FALSE}
+data.frame(predictor=c("Precalculus Grade","GPA","PSAT"),
+           prop = sort(best_beta_prob, decreasing = T)) %>% 
+  kable(digits = 3, col.names = c("Predictor", "Highest Beta Proportion"), caption = "Rank of Predictor by Beta Proportion")
+```
+
+
+
+
+
